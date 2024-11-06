@@ -3,11 +3,8 @@ package com.example.tansiri
 import android.Manifest
 import android.app.Activity
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -15,8 +12,6 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import android.util.Log
-import android.view.View
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.support.image.ImageProcessor
@@ -35,22 +30,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var cameraPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var imageClassifier: ImageClassifier
-    private lateinit var previewView: PreviewView
-    private lateinit var boundingBoxOverlay: BoundingBoxOverlay
-
-    // 하드코딩된 레이블 리스트
-    private val associatedAxisLabels = listOf(
-        "Car",
-        "GTL",
-        "Green PTL",
-        "Green TL C",
-        "Pedestrian Crossing C",
-        "Pedestrian Crossing",
-        "Person",
-        "RTL",
-        "Red PTL",
-        "Red TL C"
-    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,10 +38,6 @@ class MainActivity : AppCompatActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
         imageClassifier = ImageClassifier(this)
         imageClassifier.initializeModel()
-
-        previewView = findViewById(R.id.surfaceView)
-        boundingBoxOverlay = BoundingBoxOverlay(this)
-        previewView.overlay.add(boundingBoxOverlay)  // boundingBoxOverlay를 overlay에 추가
 
         requestCameraPermission()
     }
@@ -81,6 +56,7 @@ class MainActivity : AppCompatActivity() {
         cameraProviderFuture.addListener(Runnable {
             val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
 
+            val previewView = findViewById<PreviewView>(R.id.surfaceView)
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
@@ -95,11 +71,10 @@ class MainActivity : AppCompatActivity() {
                         try {
                             // 이미지를 Bitmap으로 변환하고 모델에 전달
                             val bitmap = imageProxyToBitmap(imageProxy)
-                            imageClassifier.classifyImage(bitmap, associatedAxisLabels) { boundingBoxes ->
-                                boundingBoxOverlay.updateBoundingBoxes(boundingBoxes)  // 바운딩 박스 업데이트
-                            }
+                            imageClassifier.classifyImage(bitmap)
+                            bitmap.recycle() // 비트맵 해제
                         } finally {
-                            imageProxy.close()
+                            imageProxy.close() // 사용한 이미지 프로세스 종료
                         }
                     })
                 }
@@ -109,7 +84,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap {
-        // YUV -> RGB 변환 로직 (이전 코드와 동일)
+        // YUV -> RGB 변환 로직
         val planes = imageProxy.planes
         val yBuffer = planes[0].buffer
         val uBuffer = planes[1].buffer
@@ -127,29 +102,34 @@ class MainActivity : AppCompatActivity() {
         uBuffer.get(uData)
         vBuffer.get(vData)
 
+        // YUV -> RGB 변환
         val width = imageProxy.width
         val height = imageProxy.height
-        val rgbArray = ByteArray(width * height * 4)
+        val rgbArray = ByteArray(width * height * 4) // ARGB 8888 형식
 
         for (j in 0 until height) {
             for (i in 0 until width) {
                 val yIndex = i + j * width
-                val uIndex = (i shr 1) + (j shr 1) * (width shr 1)
-                val vIndex = (i shr 1) + (j shr 1) * (width shr 1)
+                val uIndex = (i / 2) + (j / 2) * (width / 2)
+                val vIndex = (i / 2) + (j / 2) * (width / 2)
 
                 val y = (yData[yIndex].toInt() and 0xFF).toFloat()
                 val u = (uData[uIndex].toInt() and 0xFF).toFloat() - 128
                 val v = (vData[vIndex].toInt() and 0xFF).toFloat() - 128
 
-                val r = (y + 1.402f * v).coerceIn(0f, 255f)
-                val g = (y - 0.344136f * u - 0.714136f * v).coerceIn(0f, 255f)
-                val b = (y + 1.772f * u).coerceIn(0f, 255f)
+                var r = y + 1.402f * v
+                var g = y - 0.344136f * u - 0.714136f * v
+                var b = y + 1.772f * u
+
+                r = r.coerceIn(0f, 255f)
+                g = g.coerceIn(0f, 255f)
+                b = b.coerceIn(0f, 255f)
 
                 val rgbIndex = (i + j * width) * 4
-                rgbArray[rgbIndex] = r.toInt().toByte()
-                rgbArray[rgbIndex + 1] = g.toInt().toByte()
-                rgbArray[rgbIndex + 2] = b.toInt().toByte()
-                rgbArray[rgbIndex + 3] = -1
+                rgbArray[rgbIndex] = r.toInt().toByte() // R
+                rgbArray[rgbIndex + 1] = g.toInt().toByte() // G
+                rgbArray[rgbIndex + 2] = b.toInt().toByte() // B
+                rgbArray[rgbIndex + 3] = 255.toByte() // Alpha (완전 불투명)
             }
         }
 
@@ -157,84 +137,99 @@ class MainActivity : AppCompatActivity() {
             copyPixelsFromBuffer(ByteBuffer.wrap(rgbArray))
         }
     }
+}
 
-    data class BoundingBox(val left: Float, val top: Float, val right: Float, val bottom: Float)
+class ImageClassifier(private val activity: Activity) {
+    private lateinit var interpreter: Interpreter
+    private lateinit var probabilityBuffer: TensorBuffer
+    private lateinit var imageProcessor: ImageProcessor
+    private lateinit var classNames: List<String>
 
-    inner class ImageClassifier(private val activity: Activity) {
-        private lateinit var interpreter: Interpreter
-        private lateinit var probabilityBuffer: TensorBuffer
-        private lateinit var imageProcessor: ImageProcessor
+    // 초기화 메서드
+    fun initializeModel() {
+        classNames = loadLabels() // label.txt에서 레이블 로드
 
-        fun initializeModel() {
-            probabilityBuffer = TensorBuffer.createFixedSize(intArrayOf(1, 25200, 15), DataType.FLOAT32)
+        // 결과를 저장할 컨테이너 객체 생성
+        probabilityBuffer = TensorBuffer.createFixedSize(intArrayOf(1, 25200, 15), DataType.FLOAT32)
 
-            imageProcessor = ImageProcessor.Builder()
-                .add(ResizeOp(640, 640, ResizeOp.ResizeMethod.BILINEAR))
-                .build()
+        // 이미지 프로세서 초기화
+        imageProcessor = ImageProcessor.Builder()
+            .add(ResizeOp(640, 640, ResizeOp.ResizeMethod.BILINEAR))
+            .build()
 
-            try {
-                val tfliteModel: MappedByteBuffer = loadModelFile(activity, "third.tflite")
-                interpreter = Interpreter(tfliteModel)
-            } catch (e: IOException) {
-                Log.e("tfliteSupport", "Error reading model", e)
-            }
-        }
-
-        fun classifyImage(
-            bitmap: Bitmap,
-            associatedAxisLabels: List<String>,
-            onBoundingBoxesDetected: (List<BoundingBox>) -> Unit
-        ) {
-            val tensorImage = TensorImage(DataType.FLOAT32)
-            tensorImage.load(bitmap)
-            val processedImage = imageProcessor.process(tensorImage)
-
-            if (::interpreter.isInitialized) {
-                interpreter.run(processedImage.buffer, probabilityBuffer.buffer)
-
-                val results = probabilityBuffer.floatArray
-                val boundingBoxes = mutableListOf<BoundingBox>()
-                for (i in results.indices step 15) {
-                    val left = results[i + 1] * bitmap.width
-                    val top = results[i + 2] * bitmap.height
-                    val right = results[i + 3] * bitmap.width
-                    val bottom = results[i + 4] * bitmap.height
-
-                    boundingBoxes.add(BoundingBox(left, top, right, bottom))
-                }
-                onBoundingBoxesDetected(boundingBoxes)
-            }
-        }
-
-        private fun loadModelFile(activity: Activity, modelName: String): MappedByteBuffer {
-            val fileDescriptor = activity.assets.openFd(modelName)
-            val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-            val fileChannel = inputStream.channel
-            val startOffset = fileDescriptor.startOffset
-            val declaredLength = fileDescriptor.declaredLength
-            return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+        // 모델 로드
+        try {
+            val tfliteModel: MappedByteBuffer = loadModelFile(activity, "third.tflite")
+            interpreter = Interpreter(tfliteModel)
+        } catch (e: IOException) {
+            Log.e("tfliteSupport", "Error reading model", e)
         }
     }
 
-    inner class BoundingBoxOverlay(context: Activity) : View(context) {
-        private val paint = Paint().apply {
-            color = Color.RED
-            style = Paint.Style.STROKE
-            strokeWidth = 8f
-        }
-        private var boundingBoxes = listOf<BoundingBox>()
+    fun classifyImage(bitmap: Bitmap) {
+        val tensorImage = TensorImage(DataType.FLOAT32)
+        tensorImage.load(bitmap)
+        val processedImage = imageProcessor.process(tensorImage)
 
-        fun updateBoundingBoxes(newBoxes: List<BoundingBox>) {
-            boundingBoxes = newBoxes
-            invalidate() // 화면 갱신
-        }
+        if (::interpreter.isInitialized) {
+            try {
+                interpreter.run(processedImage.buffer, probabilityBuffer.buffer)
 
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            for (box in boundingBoxes) {
-                val rect = RectF(box.left, box.top, box.right, box.bottom)
-                canvas.drawRect(rect, paint)
+                val results = probabilityBuffer.floatArray
+                val detectedObjects = mutableListOf<String>()
+
+                for (i in 0 until 25200) {
+                    val confidence = results[i * 15 + 4] // 객체 확률 추출
+                    if (confidence > 0.5f) { // 신뢰도 임계값 조정
+                        // 각 클래스 확률 중 최대값 찾기
+                        var maxClassProb = 0f
+                        var maxClassIndex = -1
+                        for (j in 5 until 15) { // 클래스 확률 영역 (5부터 15까지)
+                            if (results[i * 15 + j] > maxClassProb) {
+                                maxClassProb = results[i * 15 + j]
+                                maxClassIndex = j - 5 // 클래스 인덱스는 0부터 시작하므로 5를 뺌
+                            }
+                        }
+
+                        // 유효한 클래스인지 확인
+                        if (maxClassIndex in classNames.indices) {
+                            val detectedClass = "${classNames[maxClassIndex]}: ${confidence * maxClassProb * 100}%"
+                            detectedObjects.add(detectedClass)
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("InferenceError", "Error during inference", e)
             }
+        }
+    }
+
+    private fun loadLabels(): List<String> {
+        val labels = mutableListOf<String>()
+        try {
+            activity.assets.open("label.txt").bufferedReader().useLines { lines ->
+                lines.forEach { labels.add(it) }
+            }
+
+            // 레이블 로드 후 로그 출력
+            Log.d("LabelLoad", "Loaded Labels: ${labels.joinToString(", ")}")
+
+        } catch (e: IOException) {
+            Log.e("LabelLoadError", "Error reading label file", e)
+        }
+        return labels
+    }
+
+
+    private fun loadModelFile(activity: Activity, modelFileName: String): MappedByteBuffer {
+        val fileDescriptor = activity.assets.openFd(modelFileName)
+        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
+        val fileChannel = inputStream.channel
+        val startOffset = fileDescriptor.startOffset
+        val declaredLength = fileDescriptor.declaredLength
+        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength).also {
+            inputStream.close() // 메모리 누수 방지를 위해 스트림 닫기
         }
     }
 }

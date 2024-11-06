@@ -35,19 +35,4 @@
             android:background="@android:color/transparent" />
     </FrameLayout>
 
-    <!-- 탐지 결과를 표시할 TextView 추가 -->
-    <TextView
-        android:id="@+id/resultTextView"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_margin="16dp"
-        android:textColor="@android:color/white"
-        android:textSize="18sp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        android:background="@android:color/transparent"
-        android:gravity="center" />
-
 </androidx.constraintlayout.widget.ConstraintLayout>
