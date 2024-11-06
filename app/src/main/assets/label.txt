@@ -1,0 +1,10 @@
+Car
+GTL
+Green PTL
+Green TL C
+Pedestrian Crossing C
+Pedestrian Crossing
+Person
+RTL
+Red PTL
+Red TL C
